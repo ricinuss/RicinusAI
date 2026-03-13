@@ -1,0 +1,1721 @@
+📑 Índice
+
+    Visão Geral da Arquitetura
+    Mapa de Dependências
+    Variáveis Globais Compartilhadas
+    Contratos entre Módulos
+    Módulo: state.js
+    Módulo: utils.js
+    Módulo: api.js
+    Módulo: chat.js
+    Módulo: render.js
+    Módulo: send.js
+    Módulo: ui.js
+    Módulo: settings.js
+    Módulo: files.js
+    Módulo: app.js
+    CSS Modules
+    HTML: Elementos e IDs
+    Estruturas de Dados
+    Fluxos Críticos
+    Guia de Contribuição por Módulo
+
+1. Visão Geral
+
+text
+
+┌─────────────────────────────────────────────────────────┐
+│                      index.html                         │
+│  ┌──────────┐  ┌──────────────────────────────────────┐ │
+│  │ SIDEBAR  │  │              MAIN                    │ │
+│  │          │  │  ┌────────────────────────────────┐  │ │
+│  │ s-head   │  │  │          m-head (header)       │  │ │
+│  │ s-search │  │  ├────────────────────────────────┤  │ │
+│  │ s-list   │  │  │                                │  │ │
+│  │ s-foot   │  │  │       chat-wrap (mensagens)    │  │ │
+│  │          │  │  │                                │  │ │
+│  │          │  │  ├────────────────────────────────┤  │ │
+│  │          │  │  │      input-area (entrada)      │  │ │
+│  └──────────┘  │  └────────────────────────────────┘  │ │
+│                └──────────────────────────────────────┘ │
+│  ┌─────────────┐  ┌───────────┐  ┌──────────────────┐  │
+│  │ Settings    │  │ Lightbox  │  │ Toast Container  │  │
+│  │ Modal       │  │           │  │                  │  │
+│  └─────────────┘  └───────────┘  └──────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+
+Stack: HTML5 + CSS3 (variáveis) + JavaScript vanilla (ES2020+)
+API: Google Gemini (generativelanguage.googleapis.com/v1beta)
+Storage: localStorage (rai_s, rai_c, rai_a)
+Sem dependências externas.
+2. Mapa de Dependências
+
+text
+
+Ordem de carregamento (obrigatória):
+═══════════════════════════════════
+
+  1. state.js      ← Define variáveis globais, DEFAULTS, save(), load()
+       ↓
+  2. utils.js      ← Helpers puros: uid(), toast(), esc(), md(), SVG, window.R
+       ↓
+  3. api.js        ← Comunicação API: buildBody(), callAPI(), parseSSE()
+       ↓
+  4. chat.js       ← CRUD de chats: newChat(), delChat(), forkChat(), etc.
+       ↓
+  5. render.js     ← Renderização DOM: renderList(), renderMsgs(), addMsgDOM()
+       ↓
+  6. send.js       ← Envio/recebimento: send(), regen(), handleStream()
+       ↓
+  7. ui.js         ← Controles visuais: updBtn(), toggleSidebar(), etc.
+       ↓
+  8. settings.js   ← Modal de configurações: openSet(), saveSet(), etc.
+       ↓
+  9. files.js      ← Arquivos/imagens: handleFiles(), importChats(), etc.
+       ↓
+ 10. app.js        ← Inicialização + binding de TODOS os eventos
+
+text
+
+Grafo de dependências (quem usa quem):
+══════════════════════════════════════
+
+state.js    → (ninguém, é a base)
+utils.js    → state.js (usa el())
+api.js      → state.js (S, aborter, save), utils.js (toast)
+chat.js     → state.js (chats, activeId, save), utils.js (uid, toast),
+              render.js (renderList, renderMsgs), ui.js (closeMobile, updBtn),
+              send.js (send)
+render.js   → state.js (chats, activeId, active), utils.js (esc, md, wordCount, SVG),
+              chat.js (switchChat, pinChat, renChat, delChat, forkChat, editMessage),
+              send.js (send, regen)
+send.js     → state.js (S, generating, aborter, save, pendingImages),
+              utils.js (uid, md, SVG, toast, wordCount),
+              api.js (callAPI, parseSSE, getValidKeys),
+              render.js (addMsgDOM, renderMsgs, renderList, scrollDown, chatMsgs),
+              chat.js (active, newChat, autoTitle),
+              ui.js (updBtn, updCharCount),
+              files.js (renderAttachPreview),
+              settings.js (openSet)
+ui.js       → state.js (el, pendingImages, generating),
+              api.js (getValidKeys)
+settings.js → state.js (S, DEFAULTS, save, el),
+              utils.js (toast),
+              ui.js (updBadge)
+files.js    → state.js (S, chats, activeId, pendingImages, save),
+              utils.js (uid, esc, toast),
+              ui.js (updBtn),
+              render.js (renderList, renderMsgs)
+app.js      → TODOS os módulos anteriores (binding de eventos)
+
+3. Variáveis Globais Compartilhadas
+
+Todas definidas em state.js, acessíveis globalmente:
+
+JavaScript
+
+// ┌──────────────────┬─────────────┬────────────────────────────────────────┐
+// │ Variável         │ Tipo        │ Descrição                              │
+// ├──────────────────┼─────────────┼────────────────────────────────────────┤
+// │ DEFAULTS         │ Object      │ Valores padrão imutáveis de config     │
+// │ S                │ Object      │ Estado atual das configurações         │
+// │ chats            │ Array       │ Lista de todos os chats                │
+// │ activeId         │ String|null │ ID do chat ativo                       │
+// │ generating       │ boolean     │ true se resposta está sendo gerada     │
+// │ aborter          │ AbortCtrl   │ Controller para cancelar fetch         │
+// │ pendingImages    │ Array       │ Imagens aguardando envio               │
+// │ searchFilter     │ string      │ Texto atual do filtro de busca         │
+// │ el(id)           │ Function    │ Atalho para document.getElementById    │
+// ├──────────────────┼─────────────┼────────────────────────────────────────┤
+// │ window.R         │ Object      │ Funções globais p/ onclick em HTML     │
+// │ SVG              │ Object      │ Strings SVG para avatares e ícones     │
+// └──────────────────┴─────────────┴────────────────────────────────────────┘
+
+4. Contratos entre Módulos
+4.1 Assinaturas de Funções Exportadas
+
+text
+
+┌─────────────┬──────────────────────────┬───────────────────────┬─────────────────────┐
+│ Módulo      │ Função                   │ Parâmetros            │ Retorno             │
+├─────────────┼──────────────────────────┼───────────────────────┼─────────────────────┤
+│ state.js    │ el(id)                   │ string                │ HTMLElement|null     │
+│             │ save()                   │ —                     │ void                │
+│             │ load()                   │ —                     │ void                │
+├─────────────┼──────────────────────────┼───────────────────────┼─────────────────────┤
+│ utils.js    │ uid()                    │ —                     │ string              │
+│             │ toast(msg, icon?)        │ string, string?       │ void                │
+│             │ esc(s)                   │ string                │ string              │
+│             │ wordCount(text)          │ string                │ number              │
+│             │ md(text)                 │ string                │ string (HTML)       │
+├─────────────┼──────────────────────────┼───────────────────────┼─────────────────────┤
+│ api.js      │ getValidKeys()           │ —                     │ string[]            │
+│             │ buildBody(messages)      │ Message[]             │ Object (API body)   │
+│             │ callAPI(messages)        │ Message[]             │ Promise<APIResult>  │
+│             │ parseSSE(stream)         │ ReadableStream        │ AsyncGenerator      │
+├─────────────┼──────────────────────────┼───────────────────────┼─────────────────────┤
+│ chat.js     │ newChat()                │ —                     │ Chat                │
+│             │ active()                 │ —                     │ Chat|undefined      │
+│             │ switchChat(id)           │ string                │ void                │
+│             │ delChat(id)              │ string                │ void                │
+│             │ renChat(id)              │ string                │ void                │
+│             │ pinChat(id)              │ string                │ void                │
+│             │ forkChat(chatId, msgIdx) │ string, number        │ void                │
+│             │ autoTitle(chat)          │ Chat                  │ void                │
+│             │ editMessage(chat, idx)   │ Chat, number          │ void                │
+├─────────────┼──────────────────────────┼───────────────────────┼─────────────────────┤
+│ render.js   │ renderList()             │ —                     │ void                │
+│             │ renderMsgs()             │ —                     │ void                │
+│             │ renderWelcome()          │ —                     │ void                │
+│             │ addMsgDOM(msg, idx)      │ Message, number       │ HTMLElement         │
+│             │ scrollDown()             │ —                     │ void                │
+├─────────────┼──────────────────────────┼───────────────────────┼─────────────────────┤
+│ send.js     │ send()                   │ —                     │ Promise<void>       │
+│             │ handleFull(d,c,t0,key)   │ Object,Chat,num,num   │ void                │
+│             │ handleStream(s,c,t0,key) │ Stream,Chat,num,num   │ Promise<void>       │
+│             │ stopGen()                │ —                     │ void                │
+│             │ regen()                  │ —                     │ Promise<void>       │
+├─────────────┼──────────────────────────┼───────────────────────┼─────────────────────┤
+│ ui.js       │ updBtn()                 │ —                     │ void                │
+│             │ updCharCount()           │ —                     │ void                │
+│             │ updBadge()               │ —                     │ void                │
+│             │ toggleSidebar()          │ —                     │ void                │
+│             │ closeMobile()            │ —                     │ void                │
+│             │ initScrollWatcher()      │ —                     │ void                │
+├─────────────┼──────────────────────────┼───────────────────────┼─────────────────────┤
+│ settings.js │ renderKeysList()         │ —                     │ void                │
+│             │ openSet()                │ —                     │ void                │
+│             │ closeSet()               │ —                     │ void                │
+│             │ saveSet()                │ —                     │ void                │
+│             │ resetSet()               │ —                     │ void                │
+│             │ updThemeUI()             │ —                     │ void                │
+│             │ setTheme(theme)          │ string                │ void                │
+├─────────────┼──────────────────────────┼───────────────────────┼─────────────────────┤
+│ files.js    │ imageToBase64(file)      │ File                  │ Promise<ImageData>  │
+│             │ renderAttachPreview()    │ —                     │ void                │
+│             │ handleFiles(files)       │ FileList              │ Promise<void>       │
+│             │ exportChats()            │ —                     │ void                │
+│             │ importChats()            │ —                     │ void                │
+│             │ clearAll()               │ —                     │ void                │
+└─────────────┴──────────────────────────┴───────────────────────┴─────────────────────┘
+
+5. Módulo: state.js
+Propósito
+
+Fonte única de verdade. Define todas as variáveis globais, valores padrão e funções de persistência.
+Variáveis Definidas
+
+JavaScript
+
+const DEFAULTS = {
+    apiKeys: [''],       // Array de chaves API do Gemini
+    currentKeyIdx: 0,    // Índice da chave em uso (rotação)
+    systemPrompt: '',    // Instrução de sistema
+    temperature: 1,      // 0-2, controle de criatividade
+    maxTokens: 8192,     // 256-65536, limite de saída
+    topP: 0.95,          // 0-1, nucleus sampling
+    model: 'gemini-2.5-flash',  // Modelo Gemini
+    thinking: true,      // Habilitar chain of thought
+    thinkingBudget: 8192,// Tokens para pensamento interno
+    streaming: true,     // Resposta em tempo real via SSE
+    theme: 'dark'        // Tema visual ativo
+};
+
+let S = {...DEFAULTS};   // Config ativa (mutável)
+let chats = [];          // Array<Chat>
+let activeId = null;     // string | null
+let generating = false;  // Semáforo de geração
+let aborter = null;      // AbortController | null
+let pendingImages = [];  // Array<ImageData> (imagens não enviadas)
+let searchFilter = '';   // Filtro de busca na sidebar
+
+Funções
+
+JavaScript
+
+el(id: string): HTMLElement | null
+// Atalho para document.getElementById
+// Usado por TODOS os módulos
+
+save(): void
+// Serializa S, chats e activeId para localStorage
+// Chaves: 'rai_s', 'rai_c', 'rai_a'
+// Trata QuotaExceededError com toast de aviso
+// Chamado após TODA mutação de estado
+
+load(): void
+// Deserializa do localStorage para variáveis globais
+// Aplica DEFAULTS como fallback para campos ausentes
+// Normaliza apiKeys (garante Array)
+// Valida activeId contra chats existentes
+// Chamado UMA VEZ na inicialização (app.js)
+
+Regras de Mutação
+
+text
+
+✅ Qualquer módulo pode LER S, chats, activeId, generating
+✅ Qualquer módulo pode ESCREVER nessas variáveis
+✅ Após escrever, DEVE chamar save() para persistir
+⚠️ generating deve ser true APENAS durante send/regen
+⚠️ aborter deve ser null quando não há geração ativa
+
+Exemplo de Uso em Outro Módulo
+
+JavaScript
+
+// Ler configuração
+const model = S.model;
+const temp = S.temperature;
+
+// Modificar e persistir
+S.temperature = 1.5;
+save();
+
+// Acessar elemento DOM
+const input = el('inp');
+
+6. Módulo: utils.js
+Propósito
+
+Funções utilitárias puras (sem side effects no estado), ícones SVG e registros globais (window.R).
+Dependências
+
+    state.js: usa el() para toastsEl
+
+Funções
+
+JavaScript
+
+uid(): string
+// Gera ID único: 'c' + timestamp + '_' + random(6)
+// Formato: "c1719345678901_a3bx2k"
+// Usado para: IDs de chat, IDs únicos de stream
+
+toast(msg: string, icon?: string): void
+// Exibe notificação temporária (3 segundos)
+// Parâmetros:
+//   msg  - Texto da mensagem
+//   icon - Emoji/texto do ícone (padrão: 'ℹ️')
+// Onde: #toasts (position: fixed, top-right)
+// Auto-remove após 3s com animação CSS
+
+esc(s: string): string
+// Escapa HTML para prevenir XSS
+// Usa textContent → innerHTML trick
+// Entrada: '<script>alert("xss")</script>'
+// Saída:   '&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;'
+// Retorna '' para input falsy
+
+wordCount(text: string): number
+// Conta palavras separadas por whitespace
+// "Hello world" → 2
+// "" → 0, null → 0
+
+md(text: string): string
+// Converte Markdown para HTML
+// Retorna string HTML segura (conteúdo é escapado)
+//
+// ═══ PIPELINE DE CONVERSÃO ═══
+//
+// 1. Protege blocos de código (```lang\n...\n```)
+//    → Substitui por %%CODEBLOCK_N%% placeholder
+//
+// 2. Protege código inline (`...`)
+//    → Substitui por %%INLINE_N%% placeholder
+//
+// 3. Escapa TODO o HTML restante com esc()
+//
+// 4. Restaura código inline com <code>
+//
+// 5. Restaura blocos de código com:
+//    <div class="code-wrap">
+//      <div class="code-head">
+//        <span>{lang}</span>
+//        <button class="copy-btn" onclick="R.copyEl(this)">Copiar</button>
+//      </div>
+//      <pre><code>{código escapado}</code></pre>
+//    </div>
+//
+// 6. Aplica formatação inline:
+//    **bold**     → <strong>
+//    *italic*     → <em>
+//    ~~strike~~   → <del>
+//    [text](url)  → <a href target="_blank">
+//
+// 7. Aplica formatação block:
+//    # H1, ## H2, ### H3
+//    > blockquote
+//    --- → <hr>
+//    1. item → <ol><li>
+//    - item  → <ul><li>
+//
+// 8. Parágrafos: \n\n → </p><p>
+//
+// 9. Limpa <p> ao redor de block elements
+//
+// ═══ ELEMENTOS SUPORTADOS ═══
+// ✅ Code blocks com language tag
+// ✅ Inline code
+// ✅ Bold, italic, strikethrough
+// ✅ H1-H3
+// ✅ Blockquote
+// ✅ Horizontal rule
+// ✅ Ordered lists (1. 2. 3.)
+// ✅ Unordered lists (- ou *)
+// ✅ Links com target="_blank"
+// ✅ Parágrafos automáticos
+// ❌ Tabelas (CSS existe mas parser não implementa)
+// ❌ Imagens em markdown
+// ❌ Listas aninhadas
+// ❌ Footnotes
+
+Constantes
+
+JavaScript
+
+const SVG = {
+    userAvatar: string,  // SVG silhueta de pessoa (cinza, sem foto)
+    botAvatar: string,   // SVG ícone estilizado (branco, para fundo colorido)
+    copy: '📋',
+    regen: '🔄',
+    fork: '🔀',
+    edit: '✏️',
+    pin: '📌'
+};
+
+Registro Global
+
+JavaScript
+
+window.R = {
+    copyEl(btn: HTMLElement): void
+    // Copia texto do <pre><code> mais próximo
+    // Chamado via onclick="" em botões de cópia de código
+    // Navega: btn → .code-wrap → pre → code → textContent
+    // Feedback visual: "Copiar" → "Copiado!" por 2s
+
+    openLightbox(src: string): void
+    // Abre imagem em tela cheia no #lightbox
+    // Define #lbImg.src e adiciona classe .show
+}
+
+Cuidados ao Modificar
+
+text
+
+⚠️ md() é chamado em TEMPO REAL durante streaming
+    → Performance é crítica, evitar regex complexos
+    → Testar com textos de 10k+ caracteres
+
+⚠️ esc() é a BASE de segurança contra XSS
+    → NUNCA inserir conteúdo do usuário sem esc()
+    → md() já escapa internamente
+
+⚠️ SVG strings são injetadas via innerHTML
+    → Manter sanitizados, sem user input
+
+⚠️ window.R.copyEl é referenciado por onclick="" no HTML
+    gerado pelo md() → não renomear sem atualizar md()
+
+7. Módulo: api.js
+Propósito
+
+Toda comunicação com a API Google Gemini. Construção de payloads, rotação de chaves, streaming SSE.
+Dependências
+
+    state.js: S, aborter, save()
+    utils.js: toast()
+
+Funções
+
+JavaScript
+
+getValidKeys(): string[]
+// Filtra S.apiKeys: apenas chaves com length >= 30
+// Retorna array vazio se nenhuma válida
+// Usado por: callAPI(), updBadge(), send()
+
+buildBody(messages: Message[]): Object
+// Constrói o payload JSON para a API Gemini
+//
+// ═══ ESTRUTURA DO RETORNO ═══
+// {
+//   contents: [
+//     { role: "user"|"model", parts: [{text}, {inlineData}...] }
+//   ],
+//   generationConfig: {
+//     temperature: number,
+//     maxOutputTokens: number,
+//     topP: number,
+//     thinkingConfig?: { thinkingBudget: number }  // só modelos 2.5
+//   },
+//   systemInstruction?: {        // campo nativo da API
+//     parts: [{ text: string }]
+//   }
+// }
+//
+// ═══ MAPEAMENTO ═══
+// Message.role 'user'  → API role 'user'
+// Message.role 'model' → API role 'model'
+// Message.content      → parts[].text
+// Message.images[]     → parts[].inlineData { mimeType, data(base64) }
+//
+// ═══ CONDIÇÕES ═══
+// systemInstruction: só adicionado se S.systemPrompt não vazio
+// thinkingConfig: só se S.thinking=true E modelo contém '2.5'
+// images: só se Message.images existe e tem items com .data
+
+callAPI(messages: Message[]): Promise<APIResult>
+// Faz a chamada à API com rotação automática de chaves
+//
+// ═══ RETORNO ═══
+// { stream: ReadableStream, isStream: true, keyUsed: number }  // streaming
+// { data: Object, isStream: false, keyUsed: number }           // normal
+//
+// ═══ ROTAÇÃO DE CHAVES ═══
+// 1. Começa em S.currentKeyIdx
+// 2. Se HTTP 429/403 ou erro de quota → tenta próxima chave
+// 3. Itera até esgotar todas as chaves válidas
+// 4. Atualiza S.currentKeyIdx na chave que funcionou
+//
+// ═══ URL CONSTRUÍDA ═══
+// Base: https://generativelanguage.googleapis.com/v1beta/models/
+// Ação: streamGenerateContent (streaming) ou generateContent (normal)
+// Query: ?key={apiKey}&alt=sse (SSE só em streaming)
+//
+// ═══ ERROS ═══
+// AbortError → re-throw (para ser tratado em send.js)
+// 429/403/quota → retry com próxima chave
+// Outros HTTP → throw Error com mensagem da API
+// Todas falham → throw "Todas as chaves API falharam"
+
+parseSSE(stream: ReadableStream): AsyncGenerator<Object>
+// Parser de Server-Sent Events
+//
+// ═══ PROTOCOLO SSE ═══
+// Formato: "data: {json}\n\n"
+// Fim: "data: [DONE]\n\n"
+//
+// ═══ FUNCIONAMENTO ═══
+// 1. Lê chunks do ReadableStream via reader.read()
+// 2. Decodifica com TextDecoder (stream: true para chunks parciais)
+// 3. Acumula em buffer, split por \n
+// 4. Linhas "data: " → parse JSON → yield
+// 5. Buffer residual processado quando stream termina
+//
+// ═══ YIELD ═══
+// Cada yield é um objeto da API com:
+// {
+//   candidates: [{
+//     content: {
+//       parts: [{ text?, thought? }]
+//     }
+//   }],
+//   usageMetadata?: { promptTokenCount, candidatesTokenCount, thoughtsTokenCount }
+// }
+//
+// ═══ ROBUSTEZ ═══
+// - JSON.parse em try/catch (ignora chunks malformados)
+// - reader.releaseLock() em finally
+// - Buffer residual processado após done=true
+
+Formato da Resposta da API (referência)
+
+JavaScript
+
+// Resposta não-stream:
+{
+    candidates: [{
+        content: {
+            parts: [
+                { text: "resposta normal" },
+                { text: "pensamento", thought: true }  // quando thinking habilitado
+            ]
+        },
+        finishReason: "STOP" | "MAX_TOKENS" | "SAFETY" | ...
+    }],
+    usageMetadata: {
+        promptTokenCount: 150,
+        candidatesTokenCount: 500,
+        thoughtsTokenCount: 200  // só com thinking
+    }
+}
+
+// Chunk de stream:
+// Mesmo formato, mas parcial (text acumulativo por chunk)
+
+Cuidados ao Modificar
+
+text
+
+⚠️ callAPI() modifica S.currentKeyIdx como side effect
+⚠️ aborter é criado aqui mas controlado por send.js (stopGen)
+⚠️ parseSSE() é um AsyncGenerator — DEVE ser consumido com for-await
+⚠️ Nunca expor chaves API em logs de produção
+⚠️ O campo systemInstruction é nativo do Gemini API v1beta
+    → Não precisa de hack com mensagens falsas user/model
+
+8. Módulo: chat.js
+Propósito
+
+CRUD completo de chats. Criação, exclusão, renomeação, fixação, bifurcação e edição de mensagens.
+Dependências
+
+    state.js: chats, activeId, generating, save()
+    utils.js: uid(), toast()
+    render.js: renderList(), renderMsgs()
+    ui.js: closeMobile(), updBtn()
+    send.js: send()
+
+Funções
+
+JavaScript
+
+newChat(): Chat
+// Cria novo chat e ativa
+// 1. Gera Chat com uid(), título "Novo Chat"
+// 2. unshift em chats[] (mais recente primeiro)
+// 3. Define activeId
+// 4. save() + renderList() + renderMsgs()
+// 5. Fecha sidebar mobile + foca input
+// Retorna o Chat criado
+
+active(): Chat | undefined
+// Retorna o chat com id === activeId
+// undefined se nenhum ativo ou não encontrado
+// Usado extensivamente em render.js e send.js
+
+switchChat(id: string): void
+// Troca chat ativo
+// 1. activeId = id
+// 2. save() + renderList() + renderMsgs()
+// 3. closeMobile()
+
+delChat(id: string): void
+// Exclui chat por ID
+// 1. Remove de chats[]
+// 2. Se era o ativo, ativa o primeiro restante (ou null)
+// 3. save() + renderList() + renderMsgs()
+
+renChat(id: string): void
+// Renomeia via prompt() do browser
+// Não faz nada se cancelado ou vazio
+// save() + renderList()
+
+pinChat(id: string): void
+// Toggle de fixação (c.pinned = !c.pinned)
+// save() + renderList() + toast de feedback
+
+forkChat(chatId: string, msgIdx: number): void
+// Bifurca chat a partir de uma mensagem específica
+// 1. Deep copy das mensagens[0..msgIdx]
+// 2. Cria novo chat com título "🔀 " + título original
+// 3. Define forkedFrom = chatId original
+// 4. Ativa o novo chat
+// Caso de uso: explorar resposta alternativa sem perder histórico
+
+autoTitle(chat: Chat): void
+// Auto-nomeia chat baseado na primeira mensagem
+// Só age se título atual é "Novo Chat"
+// Trunca em 38 caracteres + "..."
+// Chamado após primeira mensagem do usuário (em send.js)
+
+editMessage(chat: Chat, msgIdx: number): void
+// Edita mensagem do usuário e reenvia
+// 1. Valida: !generating, role === 'user'
+// 2. prompt() com conteúdo atual
+// 3. Trunca histórico: chat.messages = messages[0..msgIdx-1]
+// 4. Coloca novo texto no input
+// 5. Chama send()
+// Efeito: remove tudo a partir da mensagem editada e reenvia
+
+Estrutura do Chat
+
+JavaScript
+
+{
+    id: "c1719345678901_a3bx2k",  // uid()
+    title: "Como funciona ML?",    // Auto ou manual
+    messages: [Message, ...],      // Array ordenado cronologicamente
+    createdAt: 1719345678901,      // Date.now() na criação
+    pinned: false,                 // Fixado no topo da sidebar
+    forkedFrom: "c..."             // (opcional) ID do chat original
+}
+
+Cuidados ao Modificar
+
+text
+
+⚠️ chats[] é ordenado por inserção (unshift = mais recente primeiro)
+    → renderList() agrupa por data, não pela posição no array
+
+⚠️ editMessage() chama send() diretamente
+    → Respeita o semáforo generating
+
+⚠️ forkChat() faz deep copy com JSON.parse(JSON.stringify())
+    → Imagens com base64 em messages serão copiadas (pode ser grande)
+
+⚠️ delChat() com chat ativo: fallback para chats[0]
+    → Se array vazio, activeId = null
+
+9. Módulo: render.js
+Propósito
+
+Toda manipulação do DOM para exibição. Sidebar, mensagens, welcome screen, scroll.
+Dependências
+
+    state.js: chats, activeId, searchFilter, el()
+    utils.js: esc(), md(), wordCount(), SVG
+    chat.js: switchChat(), pinChat(), renChat(), delChat(), forkChat(), editMessage()
+    send.js: send(), regen()
+
+Elementos DOM Gerenciados
+
+text
+
+#sList     → Sidebar: lista de chats
+#chatMsgs  → Main: container de mensagens
+#chatWrap  → Main: wrapper scrollável
+
+Funções
+
+JavaScript
+
+renderList(): void
+// Renderiza lista de chats na sidebar
+//
+// ═══ PIPELINE ═══
+// 1. Filtra por searchFilter (título + conteúdo de mensagens)
+// 2. Separa: pinned vs unpinned
+// 3. Pinned → grupo "📌 Fixados" no topo
+// 4. Unpinned → agrupa por data:
+//    - Hoje (< 24h)
+//    - Ontem (24-48h)
+//    - 7 dias (48h-7d)
+//    - 30 dias (7d-30d)
+//    - Antigos (> 30d)
+// 5. Para cada chat, chama renderSidebarItem()
+// 6. Se vazio: mostra mensagem "Nenhum chat" ou "Nenhum resultado"
+
+renderSidebarItem(chat: Chat, container: HTMLElement): void
+// (função interna) Cria um item de chat na sidebar
+// Estrutura:
+//   .s-item (.act se ativo, .pinned se fixado)
+//     svg.s-item-icon (📌 ou 💬)
+//     span.s-item-text (título truncado)
+//     span.s-item-count (nº mensagens, oculto no hover)
+//     .s-item-btns (visível no hover)
+//       button.pin → pinChat()
+//       button.ren → renChat()
+//       button.del → delChat() com confirm()
+// Click no item (não em botões) → switchChat()
+
+renderMsgs(): void
+// Renderiza todas as mensagens do chat ativo
+// 1. chat = active()
+// 2. Se !chat ou sem mensagens → renderWelcome()
+// 3. Limpa chatMsgs.innerHTML
+// 4. Loop: addMsgDOM(msg, index) para cada mensagem
+// 5. scrollDown()
+
+renderWelcome(): void
+// Tela inicial quando sem chat ou chat vazio
+// Estrutura:
+//   .welcome
+//     .w-icon (SVG animado com bob)
+//     .w-title "Como posso ajudar?"
+//     .w-sub (descrição)
+//     .w-cards (grid 2x2 com prompts sugeridos)
+// Click em .w-card → preenche input + send()
+
+addMsgDOM(msg: Message, msgIdx: number): HTMLElement
+// Renderiza UMA mensagem no DOM
+//
+// ═══ ESTRUTURA HTML GERADA ═══
+// .msg[data-idx]
+//   .msg-av.u|.a           → Avatar (SVG user ou bot)
+//   .msg-body
+//     .msg-name            → "Você" ou "RicinusAI"
+//     .msg-images?         → Thumbnails clicáveis (lightbox)
+//     .think-box?          → Bloco de pensamento (toggle)
+//       .think-head        → "Pensamento" + duração
+//       .think-body        → Conteúdo md() do thinking
+//     .msg-text            → Conteúdo md() ou esc()
+//     .msg-meta?           → Tokens in/out/think, tempo, modelo, chave
+//     .msg-word-count      → "N palavras"
+//     .msg-acts            → Botões de ação (opacity:0, hover:1)
+//       btn copy           → clipboard
+//       btn regen          → regen() (só model)
+//       btn fork           → forkChat() (todos)
+//       btn edit           → editMessage() (só user)
+//
+// ═══ DIFERENÇAS USER vs MODEL ═══
+// User:  esc(content), avatar .u, botões edit+fork
+// Model: md(content), avatar .a, botões copy+regen+fork, meta tokens
+//
+// ═══ EVENTOS REGISTRADOS ═══
+// .think-head click → toggle .think-body.open + .think-arrow.open
+// .btn-copy-msg     → clipboard + feedback "Copiado!"
+// .btn-regen-msg    → regen()
+// [data-fork]       → forkChat(chatId, idx)
+// .btn-edit-msg     → editMessage(chat, idx)
+
+scrollDown(): void
+// Scroll suave até o final do chatWrap
+// Usa requestAnimationFrame para timing correto
+// Chamado após: addMsgDOM, renderMsgs, cada chunk de stream
+
+Cuidados ao Modificar
+
+text
+
+⚠️ addMsgDOM() é chamado MUITAS vezes durante renderMsgs()
+    → Evitar operações DOM pesadas desnecessárias
+
+⚠️ Conteúdo do usuário SEMPRE com esc(), do modelo com md()
+    → md() já escapa internamente
+
+⚠️ IDs de think-box usam random → únicos por render
+    → Não conflitam entre re-renders
+
+⚠️ .msg-acts tem opacity:0 por CSS, visível no hover
+    → Sempre presente no DOM (acessibilidade ok)
+
+⚠️ Imagens usam onclick="R.openLightbox()" inline
+    → Porque são geradas via innerHTML do md()
+
+⚠️ scrollDown() usa requestAnimationFrame
+    → Garante que o DOM foi atualizado antes do scroll
+
+10. Módulo: send.js
+Propósito
+
+Orquestra todo o fluxo de envio de mensagem, recebimento de resposta (stream ou não), regeneração e cancelamento.
+Dependências
+
+    state.js: S, generating, aborter, pendingImages, save()
+    utils.js: uid(), md(), SVG, toast(), wordCount()
+    api.js: callAPI(), parseSSE(), getValidKeys()
+    render.js: addMsgDOM(), renderMsgs(), renderList(), scrollDown(), chatMsgs
+    chat.js: active(), newChat(), autoTitle()
+    ui.js: updBtn(), updCharCount()
+    files.js: renderAttachPreview()
+    settings.js: openSet()
+
+Funções
+
+JavaScript
+
+send(): Promise<void>
+// Fluxo completo de envio de mensagem
+//
+// ═══ PIPELINE ═══
+//
+//  ┌──────────────────────────────────────┐
+//  │ 1. VALIDAÇÃO                         │
+//  │    - Texto vazio E sem imagens? →sair│
+//  │    - generating=true? → sair         │
+//  │    - Sem API key? → toast + openSet  │
+//  └───────────────┬──────────────────────┘
+//                  ↓
+//  ┌──────────────────────────────────────┐
+//  │ 2. PREPARAÇÃO                        │
+//  │    - active() ou newChat()           │
+//  │    - Criar Message {role,content}    │
+//  │    - Anexar pendingImages se houver  │
+//  │    - Push em chat.messages           │
+//  │    - autoTitle() + save()            │
+//  │    - Limpar input + updBtn           │
+//  └───────────────┬──────────────────────┘
+//                  ↓
+//  ┌──────────────────────────────────────┐
+//  │ 3. RENDERIZAÇÃO                      │
+//  │    - Remover welcome se presente     │
+//  │    - addMsgDOM(userMsg)              │
+//  │    - Criar typing indicator (#typInd)│
+//  │    - scrollDown()                    │
+//  └───────────────┬──────────────────────┘
+//                  ↓
+//  ┌──────────────────────────────────────┐
+//  │ 4. API CALL                          │
+//  │    - generating = true               │
+//  │    - t0 = Date.now()                 │
+//  │    - callAPI(chat.messages)          │
+//  │    - Remove typing indicator         │
+//  └───────────┬───────────┬──────────────┘
+//              ↓           ↓
+//     ┌────────────┐ ┌─────────────┐
+//     │ isStream   │ │ !isStream   │
+//     │ →handle    │ │ →handleFull │
+//     │  Stream()  │ │  ()         │
+//     └────────────┘ └─────────────┘
+//              ↓           ↓
+//  ┌──────────────────────────────────────┐
+//  │ 5. CLEANUP (finally)                 │
+//  │    - generating = false              │
+//  │    - aborter = null                  │
+//  │    - updBtn() + save()               │
+//  │    - renderList() + scrollDown()     │
+//  └──────────────────────────────────────┘
+//
+// ═══ TRATAMENTO DE ERROS ═══
+// AbortError → toast "Cancelado" (sem mensagem de erro no chat)
+// Outros     → Cria Message de erro no chat + toast
+
+handleFull(data: Object, chat: Chat, t0: number, keyUsed: number): void
+// Processa resposta não-stream da API
+// 1. Extrai candidates[0]
+// 2. Separa parts: thought=true → thinking, else → content
+// 3. Extrai usageMetadata
+// 4. Cria Message com meta completa
+// 5. Push em chat.messages + addMsgDOM + scrollDown
+
+handleStream(stream: ReadableStream, chat: Chat, t0: number, keyUsed: number): Promise<void>
+// Processa resposta em streaming
+//
+// ═══ DOM CRIADO ═══
+// Cria .msg com IDs únicos (uid-based para evitar conflito):
+//   stThink_{sid}   → think box (display:none inicialmente)
+//   stThinkH_{sid}  → think header (toggle click)
+//   stThinkB_{sid}  → think body (innerHTML atualizado a cada chunk)
+//   stThinkAr_{sid} → think arrow (toggle open)
+//   stTxt_{sid}     → texto principal (.streaming class = cursor animado)
+//   stMeta_{sid}    → metadados (display:none até final)
+//
+// ═══ LOOP DE STREAMING ═══
+// for await (chunk of parseSSE(stream)):
+//   - parts com thought=true → acumula think, atualiza stThinkB
+//   - parts sem thought      → acumula txt, atualiza stTxt
+//   - usageMetadata          → guarda para meta final
+//   - scrollDown() a cada chunk
+//
+// ═══ FINALIZAÇÃO ═══
+// 1. Remove .streaming class (para cursor de digitação)
+// 2. Preenche stMeta com tokens/tempo/modelo
+// 3. Adiciona word count
+// 4. Cria botões de ação (copy, regen)
+// 5. Push Message final em chat.messages
+
+stopGen(): void
+// Cancela geração em andamento
+// Chama aborter.abort() se aborter não é null
+// O AbortError é capturado em send() e handleStream()
+
+regen(): Promise<void>
+// Regenera última resposta do modelo
+//
+// ═══ PIPELINE ═══
+// 1. Valida: chat existe, >= 2 msgs, !generating
+// 2. Encontra último message com role='model' (busca reversa)
+// 3. Remove essa mensagem de chat.messages (splice)
+// 4. save() + renderMsgs() (re-renderiza sem a resposta)
+// 5. Cria typing indicator
+// 6. callAPI(chat.messages) — que agora termina na msg do user
+// 7. handleStream/handleFull com a nova resposta
+// 8. Cleanup igual ao send()
+//
+// ═══ DIFERENÇA DO send() ═══
+// - NÃO cria nova mensagem de usuário
+// - NÃO usa input (o texto do user já está no histórico)
+// - Remove apenas a resposta do modelo
+
+Fluxo de Estado durante Geração
+
+text
+
+IDLE:     generating=false, aborter=null, btnSend=▶ (send icon)
+GERANDO:  generating=true,  aborter=AbortController, btnSend=⏹ (stop)
+CANCELAR: aborter.abort() → AbortError → IDLE
+ERRO:     mensagem de erro no chat → IDLE
+SUCESSO:  resposta no chat → IDLE
+
+Cuidados ao Modificar
+
+text
+
+⚠️ send() é async — o semáforo `generating` previne chamadas paralelas
+⚠️ handleStream cria IDs únicos com uid() — NUNCA usar IDs fixos
+⚠️ O typing indicator (#typInd) DEVE ser removido em TODOS os caminhos
+    (sucesso, erro, abort) — usar document.getElementById para segurança
+⚠️ regen() NÃO usa o input — lê direto do chat.messages
+⚠️ pendingImages é consumido (limpo) durante send — uma vez enviado, some
+⚠️ scrollDown() é chamado a cada chunk de stream — pode causar jank se
+    a renderização de md() for lenta
+
+11. Módulo: ui.js
+Propósito
+
+Controles visuais da interface: estado do botão de envio, contador de caracteres, badge de status, sidebar, scroll.
+Dependências
+
+    state.js: el(), pendingImages, generating
+    api.js: getValidKeys()
+
+Elementos DOM Gerenciados
+
+text
+
+#btnSend       → Botão enviar/parar
+#charCount     → Contador de caracteres
+#badge         → Badge de status da API key
+#badgeTxt      → Texto do badge
+#sidebar       → Sidebar
+#sOverlay      → Overlay escuro mobile
+#btnScrollBottom → Botão "ir para baixo"
+
+Funções
+
+JavaScript
+
+updBtn(): void
+// Atualiza estado visual do botão de envio
+//
+// SE generating=true:
+//   disabled=false, class="btn-send stop", ícone=⏹ (quadrado)
+//   Click → stopGen()
+//
+// SE generating=false:
+//   disabled = !(texto no input OU imagens pendentes)
+//   class="btn-send", ícone=▶ (avião de papel)
+//   Click → send()
+
+updCharCount(): void
+// Atualiza contador de caracteres sob o input
+// 0 chars → texto vazio
+// 1-20000 → classe normal
+// 20001-30000 → classe .warn (amarelo)
+// 30001+ → classe .over (vermelho)
+// Formato: número com separador de milhar
+
+updBadge(): void
+// Atualiza badge de status no header
+// getValidKeys().length > 0 → class="badge on", "N chave(s)"
+// getValidKeys().length = 0 → class="badge off", "Sem chave"
+
+toggleSidebar(): void
+// Toggle classe .hide na sidebar
+// Em mobile (<=768px): toggle .show no overlay
+
+closeMobile(): void
+// Fecha sidebar em mobile
+// Adiciona .hide na sidebar, remove .show do overlay
+// No-op em desktop
+
+initScrollWatcher(): void
+// Registra listener de scroll no chatWrap
+// Mostra/oculta #btnScrollBottom baseado na distância do fundo
+// Threshold: 200px do final
+// Usa variável local scrollBtnVisible para evitar DOM thrashing
+
+Cuidados ao Modificar
+
+text
+
+⚠️ updBtn() é chamado com alta frequência (cada keystroke no input)
+    → Manter leve, sem DOM queries desnecessárias
+
+⚠️ O botão de enviar usa UM único addEventListener em app.js
+    → Não usar .onclick (causava bug de duplo-fire)
+    → A lógica de "send ou stop" está em app.js, não aqui
+
+⚠️ closeMobile() verifica window.innerWidth
+    → Não funciona em resize dinâmico (edge case aceitável)
+
+12. Módulo: settings.js
+Propósito
+
+Modal de configurações: renderização, abertura/fechamento, save, reset, seleção de tema.
+Dependências
+
+    state.js: S, DEFAULTS, save(), el()
+    utils.js: toast()
+    ui.js: updBadge()
+
+Elementos DOM Gerenciados
+
+text
+
+#setModal      → Background do modal
+#keysList      → Container da lista de chaves
+#sysInp        → Textarea do system prompt
+#tempSl/#tempV → Slider/valor de temperatura
+#tokSl/#tokV   → Slider/valor de max tokens
+#topSl/#topV   → Slider/valor de top P
+#thinkTog      → Toggle de thinking
+#thinkSl/#thinkV → Slider/valor do thinking budget
+#thinkBudgetGrp → Container do slider (oculto se thinking off)
+#streamTog     → Toggle de streaming
+#themeGrid     → Grid de seleção de tema
+
+Funções
+
+JavaScript
+
+renderKeysList(): void
+// Renderiza inputs de chaves API no modal
+// Para cada S.apiKeys[i]:
+//   .key-row
+//     .key-num (1, 2, 3...)
+//     input[type=password].key-inp (valor da chave)
+//     button.key-rm (remover chave)
+// Remover: se length<=1 → reseta para [''], senão splice
+// Máximo: 10 chaves (controlado pelo btnAddKey em app.js)
+
+openSet(): void
+// Abre modal e popula com valores atuais de S
+// 1. renderKeysList()
+// 2. Preenche todos os inputs/sliders com S.*
+// 3. Atualiza texto dos valores dos sliders
+// 4. Mostra/oculta thinkBudgetGrp conforme S.thinking
+// 5. updThemeUI() para marcar tema ativo
+// 6. Adiciona .show ao modal
+
+closeSet(): void
+// Remove .show do modal (sem salvar)
+
+saveSet(): void
+// Salva configurações do modal no estado
+// 1. Coleta valores de TODOS os inputs (.key-inp)
+// 2. Atualiza S.apiKeys (trim, slice(0,10))
+// 3. Reseta S.currentKeyIdx = 0
+// 4. Atualiza S.systemPrompt, temperature, maxTokens, topP
+// 5. Atualiza S.thinking, thinkingBudget, streaming
+// 6. Atualiza S.model do select
+// 7. save() + updBadge() + closeSet() + toast
+
+resetSet(): void
+// Reseta para DEFAULTS com confirmação
+// 1. confirm()
+// 2. S = {...DEFAULTS, apiKeys: ['']}
+// 3. Atualiza DOM: selModel, data-theme
+// 4. Reabre modal com valores resetados
+
+updThemeUI(): void
+// Atualiza classes .active nos botões de tema
+// Compara data-theme de cada .theme-opt com S.theme
+
+setTheme(theme: string): void
+// Aplica tema
+// 1. S.theme = theme
+// 2. document.documentElement.setAttribute('data-theme', theme)
+// 3. save() + updThemeUI()
+
+Temas Disponíveis
+
+text
+
+dark     → Roxo escuro (padrão)
+midnight → Índigo profundo
+forest   → Verde escuro
+sunset   → Rosa escuro
+ocean    → Azul escuro
+lavender → Lilás escuro
+light    → Claro (branco)
+
+Cuidados ao Modificar
+
+text
+
+⚠️ saveSet() coleta chaves do DOM, não de S.apiKeys
+    → Os inputs .key-inp são a fonte de verdade no momento do save
+
+⚠️ saveSet() reseta currentKeyIdx=0
+    → Qualquer mudança nas chaves reinicia a rotação
+
+⚠️ Temas são aplicados via data-theme no <html>
+    → Variáveis CSS recalculam automaticamente
+
+⚠️ Para adicionar novo tema:
+    1. Adicionar variáveis em css/themes.css
+    2. Adicionar .theme-opt no HTML do modal
+    3. Nenhuma mudança em JS necessária
+
+13. Módulo: files.js
+Propósito
+
+Manipulação de imagens (anexar, preview, base64), importação/exportação de chats em JSON, limpeza total.
+Dependências
+
+    state.js: S, chats, activeId, pendingImages, save()
+    utils.js: uid(), esc(), toast()
+    ui.js: updBtn()
+    render.js: renderList(), renderMsgs()
+
+Funções
+
+JavaScript
+
+imageToBase64(file: File): Promise<ImageData>
+// Converte File para objeto com base64
+//
+// ═══ VALIDAÇÃO ═══
+// file.size > 20MB → reject com erro
+//
+// ═══ RETORNO ═══
+// {
+//   mimeType: "image/png",          // file.type
+//   data: "iVBORw0KGgo...",         // base64 (sem prefixo data:)
+//   name: "foto.png",              // file.name
+//   size: 245760,                  // bytes
+//   preview: "data:image/png;..."  // data URL completa para <img src>
+// }
+
+renderAttachPreview(): void
+// Renderiza/oculta preview de imagens pendentes
+// Container: #attachPreview
+// Se pendingImages vazio → display:none + limpa HTML
+// Para cada imagem:
+//   .attach-item
+//     📷 nome (tamanhoKB)
+//     button.attach-rm → splice + re-render + updBtn
+// Chama updBtn() (imagens pendentes habilitam botão de envio)
+
+handleFiles(files: FileList): Promise<void>
+// Processa arquivos recebidos (input, drag&drop, paste)
+// Para cada arquivo:
+//   1. Valida: file.type.startsWith('image/') — senão toast
+//   2. Valida: pendingImages.length < 5 — senão toast + break
+//   3. imageToBase64(file) → push em pendingImages
+// Chama renderAttachPreview() ao final
+
+exportChats(): void
+// Exporta todos os chats como JSON
+// ═══ FORMATO ═══
+// {
+//   app: "RicinusAI",
+//   version: 2,
+//   exported: "2024-06-25T...",
+//   chats: [
+//     {
+//       ...chatFields,
+//       messages: [
+//         {
+//           ...msgFields,
+//           images: [{ name, mimeType, size }]  // SEM base64!
+//         }
+//       ]
+//     }
+//   ]
+// }
+// Download como: ricinusai_{timestamp}.json
+// ⚠️ Imagens base64 são REMOVIDAS para reduzir tamanho
+
+importChats(): void
+// Importa chats de arquivo JSON
+// 1. Cria input[type=file] e click
+// 2. Lê e parseia JSON
+// 3. Valida: data.chats deve ser Array
+// 4. confirm() com contagem
+// 5. Merge: IDs existentes são regenerados com uid()
+// 6. Push todos em chats[]
+// 7. save() + renderList() + renderMsgs() + toast
+
+clearAll(): void
+// Exclui todos os chats com confirmação
+// chats=[], activeId=null
+// save() + renderList() + renderMsgs() + toast
+
+Estrutura ImageData
+
+JavaScript
+
+{
+    mimeType: string,  // "image/png", "image/jpeg", etc.
+    data: string,      // base64 sem prefixo (para API)
+    name: string,      // nome do arquivo
+    size: number,      // tamanho em bytes
+    preview: string    // data URL completa (para <img src>)
+}
+
+Limites
+
+text
+
+Tamanho máximo por imagem: 20MB
+Máximo de imagens por mensagem: 5
+Tipos aceitos: image/* (png, jpg, gif, webp, etc.)
+
+Cuidados ao Modificar
+
+text
+
+⚠️ pendingImages é CONSUMIDO pelo send() — array é esvaziado após envio
+⚠️ base64 em messages pode crescer muito — localStorage tem ~5-10MB
+⚠️ exportChats() REMOVE base64 das imagens propositalmente
+    → Importação não restaura imagens originais
+⚠️ importChats() faz merge, não substituição
+    → Chats com IDs duplicados recebem novo ID
+
+14. Módulo: app.js
+Propósito
+
+Inicialização da aplicação e binding de TODOS os event listeners. É o "main()" do app.
+Dependências
+
+TODOS os módulos anteriores. Este é o ponto de integração.
+Inicialização (IIFE)
+
+JavaScript
+
+(function init() {
+    load();                    // state.js: carrega do localStorage
+    setDataTheme(S.theme);     // Aplica tema
+    selModel.value = S.model;  // Sincroniza select
+    updBadge();                // ui.js: status da API key
+    renderList();              // render.js: sidebar
+    renderMsgs();              // render.js: mensagens ou welcome
+    initScrollWatcher();       // ui.js: botão scroll-to-bottom
+    mobileCheck();             // Oculta sidebar em mobile
+    focusInput();              // Foca no textarea
+})();
+
+Mapa de Eventos
+
+text
+
+┌────────────────────────────┬───────────────────┬──────────────────────┐
+│ Elemento / Evento          │ Handler           │ Módulo               │
+├────────────────────────────┼───────────────────┼──────────────────────┤
+│ #inp input                 │ resize + updBtn   │ ui.js                │
+│                            │ + updCharCount    │                      │
+│ #inp keydown Enter         │ send() ou stopGen │ send.js              │
+│ #inp paste (image)         │ handleFiles()     │ files.js             │
+│ #btnSend click             │ send() ou stopGen │ send.js              │
+│ #btnNew click              │ newChat()         │ chat.js              │
+│ #btnMenu click             │ toggleSidebar()   │ ui.js                │
+│ #sOverlay click            │ closeMobile()     │ ui.js                │
+│ #selModel change           │ S.model = value   │ state.js             │
+│ #btnOpenSet click          │ openSet()         │ settings.js          │
+│ #btnClsSet click           │ closeSet()        │ settings.js          │
+│ #btnCancel click           │ closeSet()        │ settings.js          │
+│ #btnSave click             │ saveSet()         │ settings.js          │
+│ #btnReset click            │ resetSet()        │ settings.js          │
+│ #setModal click (bg)       │ closeSet()        │ settings.js          │
+│ #tempSl input              │ atualiza #tempV   │ (inline)             │
+│ #tokSl input               │ atualiza #tokV    │ (inline)             │
+│ #topSl input               │ atualiza #topV    │ (inline)             │
+│ #thinkTog change           │ show/hide budget  │ (inline)             │
+│ #thinkSl input             │ atualiza #thinkV  │ (inline)             │
+│ #btnAddKey click           │ push + render     │ settings.js          │
+│ #btnExport click           │ exportChats()     │ files.js             │
+│ #btnImport click           │ importChats()     │ files.js             │
+│ #btnClear click            │ clearAll()        │ files.js             │
+│ #btnScrollBottom click     │ scrollDown()      │ render.js            │
+│ #searchChats input         │ searchFilter=     │ render.js            │
+│ .theme-opt click           │ setTheme()        │ settings.js          │
+│ #btnAttach click           │ fileInput.click   │ (inline)             │
+│ #fileInput change          │ handleFiles()     │ files.js             │
+│ document dragover          │ show overlay      │ (inline)             │
+│ document dragleave         │ hide overlay      │ (inline)             │
+│ document drop              │ handleFiles()     │ files.js             │
+│ #lightbox click            │ close lightbox    │ (inline)             │
+│ document keydown Ctrl+Sh+N │ newChat()         │ chat.js              │
+│ document keydown Ctrl+/    │ toggleSidebar()   │ ui.js                │
+│ document keydown Escape    │ close lightbox    │ (inline)             │
+│                            │ ou closeSet()     │ settings.js          │
+└────────────────────────────┴───────────────────┴──────────────────────┘
+
+Atalhos de Teclado
+
+text
+
+Ctrl + Shift + N → Novo chat
+Ctrl + /         → Toggle sidebar
+Enter            → Enviar (ou parar se gerando)
+Shift + Enter    → Nova linha no input
+Escape           → Fechar lightbox ou modal
+
+Cuidados ao Modificar
+
+text
+
+⚠️ btnSend usa APENAS addEventListener (não .onclick)
+    → Bug anterior: .onclick + addEventListener causava double-fire
+
+⚠️ O listener do Enter no input verifica !e.shiftKey
+    → Shift+Enter = nova linha (comportamento esperado)
+
+⚠️ A lógica "send ou stop" está centralizada aqui
+    → Botão sempre chama o mesmo handler, que verifica `generating`
+
+⚠️ drag/drop listener está no document, não no input
+    → Qualquer lugar da página aceita drop de imagens
+
+⚠️ paste listener está no #inp
+    → Só intercepta se for imagem, texto passa normal
+
+15. CSS Modules
+Mapa de Arquivos CSS
+
+text
+
+css/themes.css  → Variáveis de cor por tema (7 temas)
+css/layout.css  → Reset, body, sidebar, main, header, responsive
+css/chat.css    → Mensagens, welcome, thinking, meta, code blocks,
+                  streaming cursor, typing animation, images
+css/input.css   → Textarea, botões enviar/anexar, preview de anexos,
+                  contador de caracteres
+css/modal.css   → Modal, formulários, sliders, toggles, tema selector,
+                  lista de chaves, lightbox, drop overlay
+css/utils.css   → Scrollbar, badges, toasts
+
+Variáveis CSS (definidas em themes.css)
+
+CSS
+
+--bg-1      /* Fundo principal (body) */
+--bg-2      /* Fundo secundário (sidebar, cards) */
+--bg-3      /* Fundo terciário (inputs, code) */
+--bg-4      /* Fundo quaternário (item ativo) */
+--bg-hover  /* Fundo no hover */
+--border    /* Borda padrão */
+--border-l  /* Borda mais clara */
+--tx-1      /* Texto primário */
+--tx-2      /* Texto secundário */
+--tx-3      /* Texto terciário (placeholder) */
+--accent    /* Cor de destaque principal */
+--accent-h  /* Cor de destaque hover */
+--accent-g  /* Cor de destaque glow (box-shadow) */
+--accent-s  /* Cor de destaque sutil (background) */
+--green     /* Cor semântica: sucesso */
+--red       /* Cor semântica: erro */
+--yellow    /* Cor semântica: aviso */
+--blue      /* Cor semântica: info */
+
+Para Adicionar Novo Tema
+
+CSS
+
+/* Em css/themes.css, adicionar: */
+[data-theme="nome"] {
+    --bg-1: #...;
+    --bg-2: #...;
+    /* ... todas as 18 variáveis ... */
+}
+
+HTML
+
+<!-- Em index.html, dentro de #themeGrid: -->
+<div class="theme-opt" data-theme="nome">
+    <span class="theme-dot" style="background:#cor-accent"></span>
+    Nome
+</div>
+
+Nenhuma mudança em JS necessária.
+16. HTML: Elementos e IDs
+Mapa Completo de IDs
+
+text
+
+┌──────────────────────┬──────────────────────────────────────────────┐
+│ ID                   │ Elemento / Uso                               │
+├──────────────────────┼──────────────────────────────────────────────┤
+│ sOverlay             │ div - overlay escuro quando sidebar aberta   │
+│ dropOverlay          │ div - overlay de drag & drop                 │
+│ lightbox             │ div - lightbox para imagens                  │
+│ lbImg                │ img - imagem dentro do lightbox              │
+│ sidebar              │ aside - sidebar inteira                      │
+│ btnNew               │ button - "Novo Chat"                         │
+│ searchChats          │ input - busca de chats                       │
+│ sList                │ div - lista de chats (conteúdo dinâmico)     │
+│ btnImport            │ button - importar chats                      │
+│ btnExport            │ button - exportar chats                      │
+│ btnClear             │ button - limpar tudo                         │
+│ btnOpenSet           │ button - abrir configurações                 │
+│ btnMenu              │ button - toggle sidebar (hamburger)          │
+│ selModel             │ select - seletor de modelo                   │
+│ btnScrollBottom      │ button - scroll to bottom                    │
+│ badge                │ span - badge de status API                   │
+│ badgeTxt             │ span - texto do badge                        │
+│ chatWrap             │ div - wrapper scrollável do chat             │
+│ chatMsgs             │ div - container das mensagens                │
+│ attachPreview        │ div - preview de imagens pendentes           │
+│ btnAttach            │ button - anexar imagem                       │
+│ fileInput            │ input[file] - seletor de arquivo (hidden)    │
+│ inp                  │ textarea - entrada de texto                  │
+│ btnSend              │ button - enviar/parar                        │
+│ charCount            │ span - contador de caracteres                │
+│ setModal             │ div - background do modal settings           │
+│ btnClsSet            │ button - fechar modal (X)                    │
+│ themeGrid            │ div - grid de temas                          │
+│ keysList             │ div - lista de chaves API                    │
+│ btnAddKey            │ button - adicionar chave                     │
+│ sysInp               │ textarea - system prompt                     │
+│ tempSl / tempV       │ input[range] / span - temperatura            │
+│ tokSl / tokV         │ input[range] / span - max tokens             │
+│ topSl / topV         │ input[range] / span - top P                  │
+│ thinkTog             │ input[checkbox] - toggle thinking            │
+│ thinkBudgetGrp       │ div - grupo do slider de budget              │
+│ thinkSl / thinkV     │ input[range] / span - thinking budget        │
+│ streamTog            │ input[checkbox] - toggle streaming           │
+│ btnReset             │ button - resetar config                      │
+│ btnCancel            │ button - cancelar config                     │
+│ btnSave              │ button - salvar config                       │
+│ toasts               │ div - container de toasts                    │
+├──────────────────────┼──────────────────────────────────────────────┤
+│ IDs DINÂMICOS        │                                              │
+├──────────────────────┼──────────────────────────────────────────────┤
+│ typInd               │ div - indicador de digitação (criado/removido│
+│                      │   durante send/regen)                        │
+│ t{random}            │ div - think body (por mensagem)              │
+│ ar_{random}          │ span - think arrow (por mensagem)            │
+│ stThink_{uid}        │ div - think box streaming                    │
+│ stThinkH_{uid}       │ div - think header streaming                 │
+│ stThinkAr_{uid}      │ span - think arrow streaming                 │
+│ stThinkB_{uid}       │ div - think body streaming                   │
+│ stTxt_{uid}          │ div - texto streaming                        │
+│ stMeta_{uid}         │ div - meta streaming                         │
+└──────────────────────┴──────────────────────────────────────────────┘
+
+17. Estruturas de Dados
+Chat
+
+TypeScript
+
+interface Chat {
+    id: string;           // uid() - "c1719345678901_a3bx2k"
+    title: string;        // "Como funciona ML?" ou "Novo Chat"
+    messages: Message[];  // Ordenado cronologicamente
+    createdAt: number;    // Date.now()
+    pinned: boolean;      // Fixado na sidebar
+    forkedFrom?: string;  // ID do chat original (se bifurcado)
+}
+
+Message
+
+TypeScript
+
+interface Message {
+    role: 'user' | 'model';
+    content: string;          // Texto da mensagem
+    thinking?: string | null; // Conteúdo do chain-of-thought
+    images?: ImageData[];     // Imagens anexadas (só user)
+    meta?: {                  // Metadados (só model)
+        inTok?: number;       // Tokens de entrada
+        outTok?: number;      // Tokens de saída
+        thinkTok?: number;    // Tokens de pensamento
+        dur?: string;         // Duração em segundos "2.3"
+        model?: string;       // "gemini-2.5-flash"
+        keyUsed?: number;     // Índice da chave API usada
+    };
+}
+
+ImageData
+
+TypeScript
+
+interface ImageData {
+    mimeType: string;     // "image/png"
+    data: string;         // base64 (sem prefixo data:)
+    name: string;         // "foto.png"
+    size: number;         // bytes
+    preview: string;      // "data:image/png;base64,..." (para <img>)
+}
+
+Settings (S)
+
+TypeScript
+
+interface Settings {
+    apiKeys: string[];       // ["AIzaSy...", "AIzaSy..."]
+    currentKeyIdx: number;   // 0-9
+    systemPrompt: string;    // Instrução de sistema
+    temperature: number;     // 0.0 - 2.0
+    maxTokens: number;       // 256 - 65536
+    topP: number;            // 0.0 - 1.0
+    model: string;           // "gemini-2.5-flash" etc.
+    thinking: boolean;       // Habilitar CoT
+    thinkingBudget: number;  // 1024 - 32768
+    streaming: boolean;      // SSE streaming
+    theme: string;           // "dark", "midnight", etc.
+}
+
+APIResult (retorno de callAPI)
+
+TypeScript
+
+type APIResult =
+    | { data: Object; isStream: false; keyUsed: number }
+    | { stream: ReadableStream; isStream: true; keyUsed: number };
+
+localStorage Keys
+
+text
+
+rai_s → JSON.stringify(S)           // Settings
+rai_c → JSON.stringify(chats)       // Array<Chat>
+rai_a → activeId                    // string
+
+18. Fluxos Críticos
+18.1 Fluxo: Enviar Mensagem com Streaming
+
+text
+
+Usuário digita + clica enviar
+        │
+        ▼
+    send() [send.js]
+        │
+        ├─ Valida (texto/imagens, !generating, API key)
+        ├─ Cria Message {role:'user', content, images?}
+        ├─ Push em chat.messages
+        ├─ addMsgDOM(userMsg) [render.js]
+        ├─ Cria #typInd (typing dots)
+        ├─ generating = true
+        │
+        ▼
+    callAPI(messages) [api.js]
+        │
+        ├─ buildBody(messages) → JSON payload
+        ├─ Loop de chaves (rotação se 429/403)
+        ├─ fetch() com AbortController
+        │
+        ▼
+    {stream, isStream:true, keyUsed}
+        │
+        ├─ Remove #typInd
+        │
+        ▼
+    handleStream(stream) [send.js]
+        │
+        ├─ Cria DOM: .msg com stTxt_{uid}, stThink_{uid}, etc.
+        │
+        ▼
+    for await (chunk of parseSSE(stream)) [api.js]
+        │
+        ├─ parts com thought → acumula think, innerHTML stThinkB
+        ├─ parts sem thought → acumula txt, innerHTML stTxt
+        ├─ scrollDown() cada chunk
+        │
+        ▼
+    Finalização
+        │
+        ├─ Remove .streaming class
+        ├─ Preenche stMeta (tokens, tempo)
+        ├─ Adiciona word count + action buttons
+        ├─ Push Message completa em chat.messages
+        ├─ generating = false
+        ├─ save() + renderList()
+        └─ scrollDown()
+
+18.2 Fluxo: Rotação de Chaves API
+
+text
+
+callAPI() inicia com S.currentKeyIdx
+        │
+        ▼
+    ┌─ Tenta chave #N ─────────────────┐
+    │  fetch(url?key=chaves[N])        │
+    │       │                           │
+    │  ┌────┴─────┐                     │
+    │  │ 200 OK   │ → return response   │
+    │  │ Salva N  │   keyUsed = N       │
+    │  └──────────┘                     │
+    │       │                           │
+    │  ┌────┴──────────┐                │
+    │  │ 429/403/quota │                │
+    │  │ toast "sem    │                │
+    │  │ quota..."     │                │
+    │  └───┬───────────┘                │
+    │      │ tried++                    │
+    │      │ N = (N+1) % total          │
+    │      └────────────────────────────┘
+    │
+    │  tried >= total?
+    │      │
+    │      ▼
+    │  throw "Todas falharam"
+    └───────────────────────────────────
+
+18.3 Fluxo: Editar e Reenviar
+
+text
+
+Usuário clica ✏️ em mensagem #3
+        │
+        ▼
+    editMessage(chat, 3) [chat.js]
+        │
+        ├─ prompt() com conteúdo atual
+        ├─ chat.messages = messages[0..2] (remove #3 em diante)
+        ├─ save() + renderMsgs()
+        ├─ inp.value = novo texto
+        │
+        ▼
+    send() [send.js]
+        │
+        ├─ Cria nova Message com texto editado
+        ├─ API recebe histórico até #2 + nova msg
+        └─ Resposta substituiu a original
+
+19. Guia de Contribuição por Módulo
+Como Usar Esta Documentação com IA
+
+Ao pedir para uma IA aprimorar um módulo específico, forneça:
+
+    Esta seção de introdução (visão geral + variáveis globais)
+    A documentação do módulo-alvo
+    As dependências listadas do módulo
+    O código-fonte do módulo
+
+Template de prompt:
+
+text
+
+Contexto: Estou trabalhando no projeto RicinusAI, um chat que usa
+a API Google Gemini. O projeto é modular com 10 arquivos JS.
+
+Preciso que você aprimore o módulo [NOME].
+
+[COLAR DOCUMENTAÇÃO DO MÓDULO]
+
+Variáveis globais disponíveis:
+[COLAR SEÇÃO 3]
+
+Contratos (funções que este módulo USA de outros):
+[COLAR DEPENDÊNCIAS RELEVANTES DA SEÇÃO 4]
+
+Código atual do módulo:
+[COLAR CÓDIGO]
+
+Quero que você [DESCREVER MELHORIA].
+
+Checklist por Módulo
+
+text
+
+┌─────────────┬───────────────────────────────────────────────────────┐
+│ Módulo      │ O que precisa saber para modificar                    │
+├─────────────┼───────────────────────────────────────────────────────┤
+│ state.js    │ Seção 3, Seção 5, Seção 17                           │
+│ utils.js    │ Seção 3, Seção 5(el), Seção 6                        │
+│ api.js      │ Seção 3, Seção 5(S,save), Seção 6(toast), Seção 7,   │
+│             │ Seção 17(Message,Settings)                            │
+│ chat.js     │ Seção 3, Seção 5(todos), Seção 8, Seção 17(Chat)     │
+│ render.js   │ Seção 3, Seção 6(esc,md,SVG), Seção 8(funções),      │
+│             │ Seção 9, Seção 16(IDs), Seção 17(todos)              │
+│ send.js     │ Seção 3, Seção 7(api), Seção 8(chat), Seção 9(render)│
+│             │ Seção 10, Seção 17(todos), Seção 18                  │
+│ ui.js       │ Seção 3, Seção 11, Seção 16(IDs de UI)               │
+│ settings.js │ Seção 3, Seção 5(S,DEFAULTS), Seção 12, Seção 16     │
+│ files.js    │ Seção 3, Seção 13, Seção 17(ImageData)               │
+│ app.js      │ TODAS as seções (é o integrador)                     │
+│ CSS         │ Seção 15, Seção 16(classes)                          │
+└─────────────┴───────────────────────────────────────────────────────┘
+
+Regras Gerais de Contribuição
+
+text
+
+1. NUNCA usar .onclick — sempre addEventListener
+2. NUNCA inserir user content sem esc()
+3. SEMPRE chamar save() após mutar S, chats ou activeId
+4. SEMPRE usar IDs únicos (uid()) para elementos dinâmicos
+5. SEMPRE tratar AbortError separadamente de outros erros
+6. SEMPRE limpar #typInd em todos os caminhos (success/error/abort)
+7. NUNCA adicionar dependências externas
+8. NUNCA expor chaves API em console.log
+9. Para novos temas: só CSS + HTML (zero JS)
+10. Para novos modelos: só HTML no <select> (zero JS/CSS)
